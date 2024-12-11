@@ -3,6 +3,7 @@ import sys
 import argparse
 import os
 import warnings
+import pandas as pd
 # Import necessary functions from CloseRead_plot.py
 from CloseRead_plot import plot_locus_length, plot_summary, plot_coverage, plot_mismatch_coverage
 

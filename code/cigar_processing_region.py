@@ -2,6 +2,7 @@
 
 import pysam
 import sys
+import pandas as pd
 import numpy as np
 from intervaltree import Interval, IntervalTree
 import argparse
@@ -87,12 +88,14 @@ def process_bam_file(bam_file_path, regions, output_dir): #, region_list_TRA, re
             chrom, positions = region.split(':')
             # Further split the 'start-end' part into start and end positions
             start, end = positions.split('-')
-            trees[locus] = [(chrom,IntervalTree())]
-            if chrom != '':
-               trees[locus][-1][1].addi(int(start), int(end))
+            if not locus in trees:
+              trees[locus] = [(chrom,IntervalTree())]
             else:
-               trees[locus][-1][1].addi(0, 1)
-    print(trees)
+              trees[locus].append((chrom,IntervalTree()))
+            if chrom != '':
+              trees[locus][-1][1].addi(int(start), int(end))
+            else:
+              trees[locus][-1][1].addi(0, 1)
     bamfile = pysam.AlignmentFile(bam_file_path, "rb")
     if not bamfile.check_index():
         print("No index found, exiting")
@@ -101,16 +104,15 @@ def process_bam_file(bam_file_path, regions, output_dir): #, region_list_TRA, re
     for i, (locus,tree_dict) in enumerate(trees.items()):
         output_files[i].write("#Read_name\tChromosome\tStart\tRead_length\tMapQ\tMismatches\tMismatch_rate\tLongindels\tTotal indel length\tIndel rate\tSoft clipping\tHard clipping\n")
         for (chr,pos) in tree_dict:
+            print("Data is " + str(chr) + ":" + str(pos.begin()) + "-" + str(pos.end()))
             reads = bamfile.fetch(None,None,None,str(chr) + ":" + str(pos.begin()) + "-" + str(pos.end()))
             if not reads:
                 print(f"No reads found in region: {chr}:{pos}, skipping")
                 continue
             for read in reads:
-                print(read.get_aligned_pairs(False,True))
-                print(read.get_overlap(pos.begin(),pos.end()))
-                sys.exit(1)
                 mismatches, longindels, total_indel_length, soft_clipping, hard_clipping = calculate_mismatches(read)
                 if mismatches == -1:
+                    print("No cigar")
                     continue #Cancel no cigar
                 read_length = read.query_length if read.query_length else read.infer_query_length()
                 if not read_length:
@@ -184,8 +186,13 @@ def main():
     # Open the file and read line by line
     with open(args.IG_region, 'r') as file:
         for line in file:
+            if len(line.strip())==0:
+              continue
             # Split each line into its components
             parts = line.split()
+            if len(parts)<5:
+              print(f"Error on line: {line}")
+              sys.exit(1)
             # Extract relevant data
             altbool = True if parts[1]=="alternate" else "primary"
             gene_type = parts[2]
@@ -200,11 +207,11 @@ def main():
                 continue
             elif gene_type in regions: #Haplotype
                 elem=len(regions[gene_type])
-                if elem>=2:
-                    print(f"More than 2 regions for the locus {gene_type}, skipped.")
+                if elem>=4:
+                    print(f"More than 4 regions for the locus {gene_type}, skipped.")
                     continue
                 else:
-                    elem.append(regions)
+                    regions[gene_type].append(region)
             else:
                 regions[gene_type]=[region]
 
