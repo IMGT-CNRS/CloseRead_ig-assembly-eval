@@ -188,7 +188,7 @@ def process_bam_file(bam_file_path, fasta_file, regions, output_dir): #, region_
                 end = read.reference_end
                 mapping_quality = read.mapping_quality
                 indel_rate = total_indel_length / max(1,read_length)
-                output_files[i].write(f"{read_name}\t{chromosome}\t{start}\t{read_length}\t{mapping_quality}\t{mismatches}\t{mismatch_rate}\t{longindels}\t{total_indel_length}\t{indel_rate}\t{soft_clipping}\t{hard_clipping}\t{pos}\n")
+                output_files[i].write(f"{read_name}\t{chromosome}\t{start}\t{read_length}\t{mapping_quality}\t{mismatches}\t{mismatch_rate}\t{longindels}\t{total_indel_length}\t{indel_rate}\t{soft_clipping}\t{hard_clipping}\n")
         printProgressBar (i+1,len(trees),"BAM analysis: ")
     '''
     for read in bamfile:
