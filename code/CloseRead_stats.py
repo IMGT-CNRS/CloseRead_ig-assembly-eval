@@ -6,9 +6,9 @@ import argparse
 import os
 import warnings
 import pandas as pd
+import json
 from intervaltree import Interval, IntervalTree
 warnings.filterwarnings('ignore')
-
 # Function to read species from a file
 def read_species_from_file(file_path):
     with open(file_path, 'r') as f:
@@ -167,13 +167,13 @@ def process_read_file(file_path, dirStat):
     read_file_columns = [
         'read_name', 'chromosome', 'start', 'read_length', 'mapping_quality', 
         'mismatches', 'mismatch_rate', 'longindels', 'total_indel_length', 
-        'indel_rate', 'soft_clipping', 'hard_clipping'
+        'indel_rate', 'soft_clipping', 'hard_clipping', 'list'
     ]
     
     # Read the file into a DataFrame
-    read_file = pd.read_csv(file_path, sep="\t", comment='#', names=read_file_columns)
-
-    # List of numeric columns to convert
+    read_file = pd.read_csv(file_path, sep="\t", names=read_file_columns)
+    read_file=read_file[~read_file.iloc[:, 0].str.strip().str.startswith('#')]
+    read_file.reset_index(drop=True)
     numeric_columns = [
         'start', 'read_length', 'mapping_quality', 'mismatches', 'mismatch_rate', 
         'longindels', 'total_indel_length', 'indel_rate', 'soft_clipping', 'hard_clipping'
@@ -182,7 +182,10 @@ def process_read_file(file_path, dirStat):
     # Convert all numeric columns at once
     read_file[numeric_columns] = read_file[numeric_columns].apply(pd.to_numeric)
     read_file['end'] = read_file['start'] + read_file['read_length'] - 1
-    
+    try:
+        read_file['list'] = read_file['list'].apply(json.loads)
+    except Exception as ex:
+        print("Error:" + ex)
     return read_file
 
 def coverage(read_data, single_read_error, readview_correct_threshold):
@@ -199,7 +202,7 @@ def coverage(read_data, single_read_error, readview_correct_threshold):
     """
     
     min_position = read_data['start'].min()
-    max_position = (read_data['start'] + read_data['read_length']).max()
+    max_position = (read_data['start'] + read_data['read_length'] - 1).max()
 
     """
     Initialize lists for coverage tracking
@@ -216,7 +219,7 @@ def coverage(read_data, single_read_error, readview_correct_threshold):
     #iterate all reads
     for _, row in read_data.iterrows():
         start_index = row['start'] - min_position
-        end_index = start_index + row['read_length']
+        end_index = start_index + row['read_length'] - 1
         # for all position covered by this read, coverage += 1
         if row['mapping_quality'] == 60:
             coverage_counts[start_index:end_index] += 1
@@ -236,7 +239,8 @@ def coverage(read_data, single_read_error, readview_correct_threshold):
     diff = np.diff(high_mismatch_bool.astype(int))
     start_indices = np.where(diff == 1)[0] + 1 + min_position
     end_indices = np.where(diff == -1)[0] + 1 + min_position
-    
+    print(high_mismatch_positions,high_mismatch_bool,high_mismatch_bool.size)
+    sys.exit(1)
     # Handle edge cases
     # If the first position is a high mismatch, add 0 at the beginning
     if high_mismatch_bool[0]:
@@ -361,10 +365,6 @@ def find_overlapping_mismatch_regions(pileup, start_indices, end_indices, percen
     overlaps_df = pd.DataFrame(overlapping_intervals)
 
     return overlaps_df
-
-def format_row(row):
-    return f"{row['Name']}, {row['Age']} years old from {row['City']}"
-    
 def process_gene_data(gene_file, merged_pileup, read):
     """
     Processes the gene file and performs calculations such as coverage, mismatch rates, 
@@ -389,7 +389,7 @@ def process_gene_data(gene_file, merged_pileup, read):
         # Rename columns to match the target format
         genes.rename(columns={'Gene': 'Gene', 'Chromosome': 'Contig', 'Start': 'Pos', 'End': 'EndPos'}, inplace=True)
         # Calculate sequence length from start and end positions
-        genes['SeqLength'] = genes['EndPos'] - genes['Pos'] + 1
+        genes['SeqLength'] = abs(genes['EndPos'] - genes['Pos']) + 1
     # Check if the input file is IgDetected format (GeneType, Contig, Pos, Sequence, etc.)
     elif 'Pos' in genes.columns and 'Sequence' in genes.columns:
         # Detected Type 1 format
@@ -403,7 +403,6 @@ def process_gene_data(gene_file, merged_pileup, read):
 
     else:
         raise ValueError("Unsupported file format. Ensure the input file is in one of the supported formats. \n 1. Gene, Chromosome, Strand, Start, End \n 2. GeneType Contig Pos Strand Sequence Productive Locus")
-    print(merged_pileup,read)
     invert = genes['Pos'] > genes['EndPos']
     genes.loc[invert, ['Pos','EndPos']] = genes.loc[invert, ['EndPos','Pos']].values
     # Iterate over each gene in the DataFrame
@@ -429,7 +428,13 @@ def process_gene_data(gene_file, merged_pileup, read):
         match_positions_percent = round(match_positions / len(gene_df),2) if len(gene_df) != 0 else 0
         # Filter reads that fully span the gene region on the correct chromosome
         reads_spanning_region = read[(read['chromosome'] == chrom) & (read['start'] <= start) & (read['end'] >= end)].shape[0]
-        fully_spanning_reads_100 = read[(read['chromosome'] == chrom) & (read['start'] <= start) & (read['end'] >= end) & (read['mismatches'] == 0)].shape[0]
+        fully_spanning_reads_100 = 0
+        reads = read[(read['chromosome'] == chrom) & (read['start'] <= start) & (read['end'] >= end)]['list']
+        for lista in reads:
+            for tuple in lista:
+                if int(tuple[0]) <= start and int(tuple[1]) >= end:
+                    fully_spanning_reads_100 += 1
+                    break
         fully_spanning_reads_100_percent = round(fully_spanning_reads_100 / reads_spanning_region,2) if reads_spanning_region != 0 else 0
         # Calculate average coverage and percent accuracy
         if length > 0:
@@ -440,21 +445,20 @@ def process_gene_data(gene_file, merged_pileup, read):
             percent_accuracy = 0
 
         # Compile mismatch and match positions as strings for reporting
-        #position_matches=[]
+        position_matches=[]
         position_mismatches=[]
-        #position_matches_perc=[]
+        position_matches_perc=[]
         position_mismatches_perc=[]
         for (_,elem) in gene_df.iterrows():
             if elem['Correct']==elem['Depth']:
                 continue
-            #position_matches.append(f"{elem['Pos']}-{elem['Pos']-start+1}-({elem['Correct']})/{elem['Depth']}")
+            position_matches.append(f"{elem['Correct']}")
             position_mismatches.append(f"{elem['Depth'] - elem['Correct']}")
-            #position_matches.append(f"{elem['Correct']}")
             position_mismatches_perc.append(str(round((elem['Depth'] - elem['Correct'])/elem['Depth'],2)))
-            #position_matches_perc.append(str(round(elem['Correct']/elem['Depth'],2)))
-        #position_matches = ';'.join(position_matches)
+            position_matches_perc.append(str(round(elem['Correct']/elem['Depth'],2)))
+        position_matches = ';'.join(position_matches)
         #position_matches = ";".join(position_matches)
-        #position_matches_perc = ";".join(position_matches_perc)
+        position_matches_perc = ";".join(position_matches_perc)
         position_mismatches = ';'.join(position_mismatches)
         position_mismatches_perc = ';'.join(map(str,position_mismatches_perc))
 
@@ -466,7 +470,8 @@ def process_gene_data(gene_file, merged_pileup, read):
         genes.loc[index, 'Matched_Positions_Percent'] = match_positions_percent
         genes.loc[index, 'Position_Mismatches'] = position_mismatches
         genes.loc[index, 'Mismatched_Positions_round'] = position_mismatches_perc
-        #genes.loc[index, 'Position_Matches'] = position_matches
+        genes.loc[index, 'Position_Matches'] = position_matches
+        genes.loc[index, 'Matched_Positions_round'] = position_matches_perc
         genes.loc[index, 'Percent_Accuracy'] = percent_accuracy
         genes.loc[index, 'Positions_With_At_Least_10x_Coverage'] = positions_with_10x
         genes.loc[index, 'Fully_Spanning_Reads'] = reads_spanning_region

@@ -8,7 +8,14 @@ from intervaltree import Interval, IntervalTree
 import argparse
 import os
 import warnings
-
+import itertools
+import json
+def to_ranges(iterable):
+    iterable = sorted(set(iterable))
+    for key, group in itertools.groupby(enumerate(iterable),
+                                        lambda t: t[1] - t[0]):
+        group = list(group)
+        yield group[0][1], group[-1][1]
 # Print iterations progress
 def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█', printEnd = "\r"):
     """
@@ -66,7 +73,7 @@ def calculate_mismatches(read):
             total_indel_length += length
     return mismatches, longindels, total_indel_length, soft_clipping, hard_clipping
 
-def process_bam_file(bam_file_path, regions, output_dir): #, region_list_TRA, region_list_TRB, region_list_TRG):
+def process_bam_file(bam_file_path, fasta_file, regions, output_dir): #, region_list_TRA, region_list_TRB, region_list_TRG):
     """ Process a BAM file to estimate mismatches for each read. """
     # Output file names
     if not os.path.exists(output_dir):
@@ -97,6 +104,7 @@ def process_bam_file(bam_file_path, regions, output_dir): #, region_list_TRA, re
             else:
               trees[locus][-1][1].addi(0, 1)
     bamfile = pysam.AlignmentFile(bam_file_path, "rb")
+    assembly = pysam.FastaFile(fasta_file)
     if not bamfile.check_index():
         print("No index found, exiting")
         return
@@ -109,7 +117,63 @@ def process_bam_file(bam_file_path, regions, output_dir): #, region_list_TRA, re
             if not reads:
                 print(f"No reads found in region: {chr}:{pos}, skipping")
                 continue
+            #sequence = assembly.fetch(None,None,None,str(chr) + ":" + str(pos.begin()) + "-" + str(pos.end()))
+            '''
+            results = bamfile.count_coverage(str(chr),pos.begin()-1,pos.end(),quality_threshold=0)
+            with open("reads.txt","w") as file:
+                for i in range(len(results[0])):
+                    percent=0
+                    seq="UN"
+                    try:
+                        seq=sequence[i]
+                        seqlower=seq.lower()
+                        count=0
+                        for elem in results:
+                            count+=elem[i]
+                        if seqlower=="t":
+                            percent=round(results[3][i]/count*100,2)
+                        elif seqlower=="a":
+                            percent=round(results[0][i]/count*100,2)
+                        elif seqlower=="c":
+                            percent=round(results[1][i]/count*100,2)
+                        else:
+                            percent=round(results[2][i]/count*100,2)
+                    except Exception as ex:
+                        print(ex)
+                        pass
+                    counting="-".join(map(str,[elem[i] for elem in results]))
+                    file.write(str(pos.begin()+i) + "\t" + seq + "\t" + str(percent) + "\t" + counting + "\n")
+            sys.exit(1)
+            
+            with open("reads.txt","w") as file:
+                for read in reads:
+                    read_length = read.query_length if read.query_length else read.infer_query_length()
+                    file.write(read.query_name + "\t" + str(read.query_alignment_start) + ":" + str(read.query_alignment_end) + "(" + str(read.query_alignment_length) + ")" + "\t" + str(read_length) + "\t" + str(read.reference_start) + "-" + str(read.reference_end) + "(" + str(read.reference_length if read.reference_length else 0) + ")\t" + (read.query_alignment_sequence if read.query_alignment_sequence else "") + "\t" + read.cigarstring + "\t" + "-".join(map(str,read.query_alignment_qualities if read.query_alignment_qualities else "")) + "\n")
+            bamfile.close()
+            assembly.close()
+            sys.exit(1)
+            
+            results = bamfile.pileup(None,None,None,str(chr) + ":" + str(pos.begin()) + "-" + str(pos.end()),fastafile=assembly,min_base_quality=0,truncate=True)
+            with open("results.txt","w") as file:
+                for pile in results:
+                    seq=assembly.fetch(None,None,None,str(chr) + ":" + str(pile.reference_pos) + "-" + str(pile.reference_pos))
+                    file.write(pile.reference_name + " " + str(pile.reference_pos+1) + " " + str(pile.get_num_aligned()) + " " + seq + " " + "-".join(pile.get_query_names()) + " " + "".join(pile.get_query_sequences(True,True,True)) + " " + "-".join(map(str,pile.get_query_qualities())) + " " + "-".join(map(str,pile.get_mapping_qualities())) + "\n")
+            '''
             for read in reads:
+                if read.is_secondary():
+                    continue
+                read_name = read.query_name
+                '''
+                try:
+                    pos=read.get_aligned_pairs(True,True)
+                except Exception as ex:
+                    print(f"No MD tag identified on read: {read_name}")
+                    continue
+                pos=filter(lambda x: x[2] is not None and x[2].isupper(), pos) #lower case is substitution and must be removed
+                pos=[x[1] for x in pos]
+                pos=list(to_ranges(pos))
+                pos=json.dumps(pos)
+                '''
                 mismatches, longindels, total_indel_length, soft_clipping, hard_clipping = calculate_mismatches(read)
                 if mismatches == -1:
                     print("No cigar")
@@ -119,13 +183,12 @@ def process_bam_file(bam_file_path, regions, output_dir): #, region_list_TRA, re
                     print(f"Read {read_name} is skipped because no length found.")
                     continue #Cannot get length so skip
                 mismatch_rate = mismatches / max(1,read_length) if mismatches != 0 else 0
-                read_name = read.query_name
                 chromosome = bamfile.get_reference_name(read.reference_id)
                 start = read.reference_start
                 end = read.reference_end
                 mapping_quality = read.mapping_quality
                 indel_rate = total_indel_length / max(1,read_length)
-                output_files[i].write(f"{read_name}\t{chromosome}\t{start}\t{read_length}\t{mapping_quality}\t{mismatches}\t{mismatch_rate}\t{longindels}\t{total_indel_length}\t{indel_rate}\t{soft_clipping}\t{hard_clipping}\n")
+                output_files[i].write(f"{read_name}\t{chromosome}\t{start}\t{read_length}\t{mapping_quality}\t{mismatches}\t{mismatch_rate}\t{longindels}\t{total_indel_length}\t{indel_rate}\t{soft_clipping}\t{hard_clipping}\t{pos}\n")
         printProgressBar (i+1,len(trees),"BAM analysis: ")
     '''
     for read in bamfile:
@@ -167,8 +230,8 @@ def main():
 
     # Required arguments
     parser.add_argument('input_file', help='Input SAM or BAM file.')
+    parser.add_argument('fasta_file', help='Fasta reference.')
     parser.add_argument('IG_region', help='IG position file')
-    parser.add_argument('species', help='Species name.')
     parser.add_argument('output', help='Output directory path.')
 
     # Parse arguments
@@ -194,6 +257,7 @@ def main():
               print(f"Error on line: {line}")
               sys.exit(1)
             # Extract relevant data
+            species = parts[0]
             altbool = True if parts[1]=="alternate" else "primary"
             gene_type = parts[2]
             chr_name = parts[3]
@@ -218,9 +282,9 @@ def main():
 
     # Output the lists to check
     print("Regions:", regions)
-    outdir=os.path.join(args.output,args.species)
+    outdir=os.path.join(args.output,species)
     if args.input_file.endswith('.sam') or args.input_file.endswith('.bam'):
-        process_bam_file(args.input_file, regions, outdir) #region_list_TRA, region_list_TRB, region_list_TRG)
+        process_bam_file(args.input_file, args.fasta_file, regions, outdir) #region_list_TRA, region_list_TRB, region_list_TRG)
     else:
         raise ValueError("Not implemented.")
 
