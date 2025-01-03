@@ -160,7 +160,7 @@ def process_bam_file(bam_file_path, fasta_file, regions, output_dir): #, region_
                     file.write(pile.reference_name + " " + str(pile.reference_pos+1) + " " + str(pile.get_num_aligned()) + " " + seq + " " + "-".join(pile.get_query_names()) + " " + "".join(pile.get_query_sequences(True,True,True)) + " " + "-".join(map(str,pile.get_query_qualities())) + " " + "-".join(map(str,pile.get_mapping_qualities())) + "\n")
             '''
             for read in reads:
-                if read.is_secondary():
+                if read.is_secondary:
                     continue
                 read_name = read.query_name
                 '''
